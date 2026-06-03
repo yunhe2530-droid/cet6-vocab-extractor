@@ -1,167 +1,49 @@
-"""六级别黄标单词提取引擎"""
+"""六级黄标单词提取引擎 v2 — 按原始需求重写"""
 
 import io
 import re
 import time
-from collections import defaultdict
 
 import fitz
 import openpyxl
 import pytesseract
 import requests
-from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from PIL import Image
 
-from cet6_phrases import CET6_PHRASES, check_phrase
+from cet6_phrases import CET6_PHRASES
 
 # ── 配置 ──────────────────────────────────────────
-YELLOW = (0.973, 0.890, 0.518)  # PDF 黄标 RGB float
+YELLOW = (0.973, 0.890, 0.518)
 YELLOW_TOLERANCE = 0.001
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 
-# 停用词表（基础功能词，不应收入单词本）
-STOP_WORDS = {
-    "the", "a", "an", "and", "or", "but", "if", "because", "so", "than",
-    "that", "this", "these", "those", "what", "which", "who", "whom", "whose",
-    "when", "where", "why", "how", "all", "each", "every", "both", "few",
-    "more", "most", "some", "any", "no", "not", "only", "own", "same",
-    "as", "at", "by", "for", "in", "of", "on", "to", "from", "with",
-    "into", "through", "during", "before", "after", "above", "below",
-    "between", "under", "over", "up", "down", "out", "off", "about",
-    "against", "toward", "upon", "without", "within",
-    "be", "is", "are", "was", "were", "been", "being", "am",
-    "have", "has", "had", "having",
-    "do", "does", "did", "doing",
-    "will", "would", "shall", "should", "may", "might", "can", "could",
-    "must", "need", "dare",
-    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
-    "my", "your", "his", "its", "our", "their", "mine", "yours", "hers",
-    "itself", "himself", "herself", "myself", "yourself", "ourselves", "themselves",
+# 仅过滤最基础的功能词（用户主动标黄的不应过滤）
+MINIMAL_STOP = {
+    "the", "a", "an", "and", "or", "but", "so", "if", "than",
+    "of", "in", "on", "at", "to", "for", "by", "with", "from",
+    "be", "is", "are", "was", "were", "been", "am",
+    "it", "its", "it's", "itself",
+    "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them",
+    "my", "your", "his", "my", "our", "their",
     "this", "that", "these", "those",
-    "who", "whom", "whose", "which", "what", "whoever", "whatever", "whichever",
-    "someone", "somebody", "something", "anyone", "anybody", "anything",
-    "everyone", "everybody", "everything", "nobody", "nothing", "noone",
+    "what", "which", "who", "whom", "whose",
+    "no", "not", "nor", "neither",
+    "as", "just", "very", "too", "also", "even",
     "there", "here", "where", "when", "why", "how",
-    "very", "just", "quite", "too", "much", "little", "enough",
-    "such", "so", "also", "even", "still", "already", "yet",
-    "now", "then", "often", "always", "never", "sometimes", "usually",
-    "well", "however", "therefore", "thus", "hence",
-    "indeed", "perhaps", "maybe", "otherwise",
-    "get", "got", "gets", "getting",
-    "say", "said", "says", "telling", "told", "tell", "tells",
-    "make", "made", "makes", "making",
-    "go", "went", "gone", "goes", "going",
-    "come", "came", "comes", "coming",
-    "take", "took", "taken", "takes", "taking",
-    "see", "saw", "seen", "sees", "seeing",
-    "know", "knew", "known", "knows", "knowing",
-    "think", "thought", "thinks", "thinking",
-    "give", "gave", "given", "gives", "giving",
-    "find", "found", "finds", "finding",
-    "want", "wanted", "wants", "wanting",
-    "like", "liked", "likes", "liking",
-    "use", "used", "uses", "using",
-    "look", "looked", "looks", "looking",
-    "work", "worked", "works", "working",
-    "seem", "seemed", "seems", "seeming",
-    "try", "tried", "tries", "trying",
-    "ask", "asked", "asks", "asking",
-    "need", "needed", "needs", "needing",
-    "feel", "felt", "feels", "feeling",
-    "help", "helped", "helps", "helping",
-    "keep", "kept", "keeps", "keeping",
-    "put", "puts", "putting",
-    "set", "sets", "setting",
-    "let", "lets", "letting",
-    "mean", "meant", "means", "meaning",
-    "begin", "began", "begun", "begins", "beginning",
-    "happen", "happened", "happens", "happening",
-    "show", "showed", "shown", "shows", "showing",
-    "bring", "brought", "brings", "bringing",
-    "turn", "turned", "turns", "turning",
-    "call", "called", "calls", "calling",
-    "provide", "provided", "provides", "providing",
-    "consider", "considered", "considers", "considering",
-    "appear", "appeared", "appears", "appearing",
-    "expect", "expected", "expects", "expecting",
-    "include", "included", "includes", "including",
-    "change", "changed", "changes", "changing",
-    "lead", "led", "leads", "leading",
-    "learn", "learned", "learns", "learning",
-    "live", "lived", "lives", "living",
-    "believe", "believed", "believes", "believing",
-    "hold", "held", "holds", "holding",
-    "write", "wrote", "written", "writes", "writing",
-    "stand", "stood", "stands", "standing",
-    "actually", "almost", "another", "around", "away", "back",
-    "because", "become", "becomes", "becoming", "became",
-    "being", "best", "better", "big", "bigger", "larger",
-    "cannot", "cause", "causes", "certain", "certainly",
-    "clear", "clearly", "close", "come", "course", "different",
-    "each", "early", "else", "end", "enough", "especially",
-    "example", "fact", "far", "finally", "first", "following",
-    "forward", "further", "general", "generally", "getting",
-    "given", "going", "good", "great", "group", "having",
-    "help", "high", "highly", "idea", "important", "instead",
-    "interest", "interested", "interesting", "kind",
-    "large", "last", "later", "least", "leave", "leaving",
-    "less", "left", "long", "longer", "made", "making",
-    "man", "men", "might", "money", "moreover", "most",
-    "mostly", "moving", "much", "name", "namely",
-    "necessary", "next", "nonetheless", "nor",
-    "nothing", "notice", "number", "obtain", "obtained",
-    "obvious", "obviously", "often", "old", "once", "one",
-    "ones", "order", "other", "others", "otherwise",
-    "particular", "particularly", "partly", "people",
-    "per", "perhaps", "person", "place", "point",
-    "possible", "presumably", "previous", "previously",
-    "primarily", "probably", "proper", "quite",
-    "rather", "really", "reason", "reasonably", "recent",
-    "recently", "regard", "regarding", "regardless",
-    "related", "relatively", "respect", "respectively",
-    "result", "resulting", "right", "second", "serious",
-    "seriously", "several", "short", "shortly", "significantly",
-    "similar", "similarly", "simply", "since", "slightly",
-    "someone", "somewhat", "specially", "specific",
-    "specifically", "state", "states", "still", "strong",
-    "strongly", "subject", "subsequently", "substantial",
-    "substantially", "successful", "successfully", "sufficient",
-    "sufficiently", "sure", "surely", "taking", "third",
-    "thorough", "thoroughly", "throughout", "together",
-    "toward", "turned", "turning", "turns", "typical",
-    "typically", "unless", "unlikely", "upon", "useful",
-    "various", "vary", "varied", "varies", "varying",
-    "way", "ways", "whereas", "whether", "whole", "wide",
-    "widely", "willing", "within", "wonder", "wondering",
-    "worth", "yet", "young", "yourself", "yourselves",
-    "it's", "its", "many", "past", "two", "years", "words",
-    "life", "hope", "way", "ways", "day", "days", "time",
-    "thing", "things", "people", "person", "place", "part",
-    "world", "year", "work", "hand", "hands", "head",
-    "eye", "eyes", "face", "mind", "heart",
-    "long", "short", "big", "small", "old", "new", "good",
-    "great", "high", "low", "large", "full",
-    "come", "came", "go", "went", "gone", "take", "took",
-    "give", "gave", "put", "set", "let",
-    "say", "said", "tell", "told", "ask", "asked",
-    "another", "many", "much", "lots", "lots of",
-    "always", "never", "often", "usually",
-    "today", "yesterday", "tomorrow", "now", "then",
-    "first", "second", "third", "last", "next",
-    "may", "can", "could", "would", "should", "might",
-    "must", "shall", "will", "need", "dare", "ought",
-    "yes", "no", "sure", "ok", "okay", "well",
-    "please", "thanks", "thank",
-    "maybe", "perhaps", "probably", "possibly",
-    "actually", "basically", "generally", "literally",
-    "essentially", "ultimately", "eventually",
+    "do", "does", "did", "done",
+    "have", "has", "had",
+    "will", "would", "shall", "should", "can", "could", "may", "might", "must",
+    "say", "said", "says", "tell", "told", "make", "made", "get", "got",
 }
 
-# ── 颜色检测 ──────────────────────────────────────
+
+# ══════════════════════════════════════════════════
+#  颜色检测
+# ══════════════════════════════════════════════════
 
 def is_yellow(fill):
-    """判断 fill 是否匹配黄标颜色"""
     if fill is None:
         return False
     try:
@@ -172,176 +54,32 @@ def is_yellow(fill):
         return False
 
 
-# ── 原生 PDF 提取 ──────────────────────────────────
-
-def extract_native(pdf_bytes, filename=""):
-    """从原生文本 PDF 提取黄标区域内的单词"""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page_words = {}
-
-    for page_num, page in enumerate(doc):
-        # 收集该页所有黄色 rect
-        yellow_rects = []
-        for drawing in page.get_drawings():
-            if drawing.get("fill") and is_yellow(drawing["fill"]):
-                yellow_rects.append(drawing["rect"])
-            # 也检测 fill 在颜色属性里的情况
-            for item in drawing.get("items", []):
-                if len(item) >= 3:
-                    fill = item[2] if isinstance(item[2], (tuple, list)) else None
-                    if fill and is_yellow(fill) and len(item) > 1:
-                        try:
-                            yellow_rects.append(item[1])
-                        except Exception:
-                            pass
-
-        # 合并重叠 rect
-        yellow_rects = _merge_rects(yellow_rects)
-        if not yellow_rects:
-            continue
-
-        # 提取页内文字
-        blocks = page.get_text("dict")["blocks"]
-        page_words[page_num] = []
-
-        for block in blocks:
-            if block.get("type") != 0:  # text block only
-                continue
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    bbox = fitz.Rect(span["bbox"])
-                    text = span["text"].strip()
-                    if not text:
-                        continue
-                    # 检测是否落在黄色 rect 内
-                    for yr in yellow_rects:
-                        overlap = bbox.intersect(yr)
-                        if overlap and overlap.get_area() > 0:
-                            page_words[page_num].append({
-                                "text": text,
-                                "bbox": bbox,
-                                "font": span.get("font", ""),
-                                "size": span.get("size", 0),
-                            })
-                            break
-
-    doc.close()
-    return page_words
-
+# ══════════════════════════════════════════════════
+#  辅助工具
+# ══════════════════════════════════════════════════
 
 def _merge_rects(rects):
-    """合并重叠或相邻的矩形"""
     if not rects:
         return []
     merged = []
     sorted_rects = sorted(rects, key=lambda r: (r.y0, r.x0))
-    current = sorted_rects[0]
+    cur = sorted_rects[0]
     for r in sorted_rects[1:]:
-        if (abs(r.y0 - current.y0) < 5 and abs(r.y1 - current.y1) < 5
-                and r.x0 <= current.x1 + 5):
-            current = fitz.Rect(current.x0, current.y0,
-                                max(current.x1, r.x1), max(current.y1, r.y1))
+        if (abs(r.y0 - cur.y0) < 5 and abs(r.y1 - cur.y1) < 5
+                and r.x0 <= cur.x1 + 5):
+            cur = fitz.Rect(cur.x0, cur.y0, max(cur.x1, r.x1), max(cur.y1, r.y1))
         else:
-            merged.append(current)
-            current = r
-    merged.append(current)
+            merged.append(cur)
+            cur = r
+    merged.append(cur)
     return merged
 
 
-# ── 扫描件 PDF 提取 ───────────────────────────────
-
-def extract_scanned(pdf_bytes, filename=""):
-    """从扫描件 PDF 提取黄标区域→OCR"""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page_words = {}
-
-    for page_num, page in enumerate(doc):
-        # 获取黄色 rect
-        yellow_rects = _get_yellow_rects(page)
-        if not yellow_rects:
-            continue
-
-        # 获取底图（不含 overlay）
-        images = page.get_images(full=True)
-        if not images:
-            continue
-
-        # 取分辨率最高的底图
-        best_img = max(images, key=lambda x: (x[2], x[3]))
-        xref = best_img[0]
-        pix = fitz.Pixmap(doc, xref)
-        if pix.n > 4:
-            pix = fitz.Pixmap(fitz.csRGB, pix)
-
-        img_bytes = pix.tobytes("png")
-        pil_img = Image.open(io.BytesIO(img_bytes))
-        img_w, img_h = pil_img.size
-
-        # 获取图片在 PDF 页面的放置位置
-        img_info_list = page.get_image_info()
-        img_bbox = None
-        for info in img_info_list:
-            if info.get("xref") == xref or True:  # 用第一个图片的 bbox
-                img_bbox = fitz.Rect(info["bbox"])
-                break
-        if not img_bbox:
-            # fallback: 用页面尺寸
-            img_bbox = page.rect
-
-        # 图片在 PDF 空间中的实际尺寸
-        pdf_img_w = img_bbox.width
-        pdf_img_h = img_bbox.height
-
-        # 对每个黄色 rect 进行 OCR
-        page_words[page_num] = []
-        for yr in yellow_rects:
-            # 只处理与图片区域重叠的黄标
-            overlap = yr.intersect(img_bbox)
-            if overlap.get_area() <= 0:
-                continue
-
-            # 坐标映射：PDF 空间 → 图片像素空间
-            scale_x = img_w / pdf_img_w
-            scale_y = img_h / pdf_img_h
-            x0 = int((yr.x0 - img_bbox.x0) * scale_x)
-            y0 = int((yr.y0 - img_bbox.y0) * scale_y)
-            x1 = int((yr.x1 - img_bbox.x0) * scale_x)
-            y1 = int((yr.y1 - img_bbox.y0) * scale_y)
-            y0 = int(yr.y0 * scale_y)
-            x1 = int(yr.x1 * scale_x)
-            y1 = int(yr.y1 * scale_y)
-            x0, y0, x1, y1 = max(0, x0), max(0, y0), min(img_w, x1), min(img_h, y1)
-            if x1 <= x0 or y1 <= y0:
-                continue
-
-            # 加裁边 5px 提高识别率
-            pad = 5
-            crop = pil_img.crop((max(0, x0-pad), max(0, y0-pad),
-                                 min(img_w, x1+pad), min(img_h, y1+pad)))
-            # 放大提高 OCR 准确率
-            crop = crop.resize((crop.width * 3, crop.height * 3), Image.LANCZOS)
-
-            try:
-                text = pytesseract.image_to_string(crop, lang="eng",
-                                                   config="--psm 7 --oem 3")
-                text = text.strip()
-                if text:
-                    page_words[page_num].append({
-                        "text": text,
-                        "bbox": yr,
-                    })
-            except Exception:
-                continue
-
-    doc.close()
-    return page_words
-
-
 def _get_yellow_rects(page):
-    """从 page 提取所有黄色 rect"""
     rects = []
     for drawing in page.get_drawings():
-        if drawing.get("fill") and is_yellow(drawing["fill"]):
+        f = drawing.get("fill")
+        if f and is_yellow(f):
             rects.append(drawing["rect"])
         for item in drawing.get("items", []):
             if len(item) >= 3:
@@ -354,72 +92,230 @@ def _get_yellow_rects(page):
     return _merge_rects(rects)
 
 
-# ── 单词净化 ──────────────────────────────────────
-
-def clean_text(text):
-    """清洗 OCR/提取的文字：去标点、拆分单词"""
-    # 统一 smart quotes
+def _clean_words(text):
+    """提取字母单词，返回 (words, original_spans)"""
     text = text.replace('‘', "'").replace('’', "'")
     text = text.replace('“', '"').replace('”', '"')
-    # 移除冗余字符
-    text = re.sub(r'[–—·•●○□■▲△▼▽◆◇★☆※→←↑↓♯♭♪♫]', ' ', text)
-    # 按非字母/连字符/撇号分割
-    words = re.findall(r"[A-Za-z]+(?:['-][A-Za-z]+)*", text)
-    return [w for w in words if len(w) > 1]
+    spans = re.findall(r"[A-Za-z]+(?:['-][A-Za-z]+)*", text)
+    return [s for s in spans if len(s) > 1], spans
 
 
-def is_valid_word(w):
-    """过滤无效单词和停用词"""
-    if len(w) <= 2:
-        return False
-    if len(w) > 30:
-        return False
-    if w.isupper() and len(w) > 8:
-        return False
-    if w.lower() in STOP_WORDS:
-        return False
-    # 过滤明显 OCR 噪点：内部有大写字母混乱（如 "yYRemove"）
-    if re.search(r'[a-z][A-Z][a-z]', w):
-        return False
-    # 过滤连续重复字符 4+（如 "succeec"、"aaaab"）
-    if re.search(r'(.)\1{3,}', w):
-        return False
-    # 只保留字母、连字符、撇号
-    if not re.match(r"^[A-Za-z'\-]+$", w):
-        return False
-    return True
+# ══════════════════════════════════════════════════
+#  句子提取（原生 PDF）
+# ══════════════════════════════════════════════════
+
+def _split_sentences(text):
+    """按 .?! 分割句子，返回句子列表"""
+    sents = re.split(r'(?<=[.?!])\s+', text)
+    return [s.strip() for s in sents if len(s.strip()) > 5]
 
 
-def find_phrases(words):
-    """从单词列表中检测已知短语"""
-    found = []
-    i = 0
-    while i < len(words):
-        # 尝试从 i 开始匹配最长短语
-        matched = False
-        for n in range(min(6, len(words) - i), 1, -1):  # 最长6词
-            candidate = ' '.join(words[i:i+n]).lower()
-            if candidate in CET6_PHRASES:
-                found.append(candidate)
-                i += n
-                matched = True
-                break
-        if not matched:
-            i += 1
-    return found
+def _extract_page_text(page):
+    """获取页面纯文本"""
+    return page.get_text("text")
 
 
-# ── 词典查询 ──────────────────────────────────────
+def find_sentence_for_word(word, page_text, bbox_y, page_num=0):
+    """
+    在页面文本中找到包含 word 的完整句子。
+    bbox_y 用于消歧（选择 y 坐标最近的段落）
+    """
+    sents = _split_sentences(page_text)
+    if not sents:
+        return ""
+
+    w_lower = word.strip(".,!?;:'\"").lower()
+
+    # 找所有包含该词的句子
+    candidates = []
+    for i, s in enumerate(sents):
+        if w_lower in s.lower():
+            candidates.append((i, s))
+
+    if not candidates:
+        return word  # fallback
+    if len(candidates) == 1:
+        return candidates[0][1]
+
+    # 多句包含，按句子在页面中的位置（行号）消歧
+    # 用 bbox_y 估计该词在第几行，选择最近的段落
+    # 简化：返回第一个
+    return candidates[0][1]
+
+
+# ══════════════════════════════════════════════════
+#  短语检测（结合句子上下文 + CET6 短语库）
+# ══════════════════════════════════════════════════
+
+def detect_phrase_in_sentence(highlighted_word, sentence):
+    """
+    在句子中检测 highlighted_word 是否属于 CET-6 短语。
+    返回 (phrase, words_in_phrase) 或 (highlighted_word, 1)
+    """
+    hl = highlighted_word.lower().strip(".,!?;:'\"")
+    words, _ = _clean_words(sentence)
+    words_lower = [w.lower() for w in words]
+
+    # 找 highlighted_word 在句子中的所有位置
+    positions = [i for i, w in enumerate(words_lower) if w == hl]
+    if not positions:
+        return highlighted_word, words  # fallback: 返回原词
+
+    # 对每个位置，尝试最长短语匹配（从长到短）
+    for pos in positions:
+        for n in range(5, 1, -1):  # 5→2 词短语
+            for start in range(max(0, pos - n + 1),
+                               min(pos + 1, len(words) - n + 1)):
+                if start + n > len(words):
+                    continue
+                candidate = ' '.join(words_lower[start:start + n])
+                if candidate in CET6_PHRASES:
+                    # 找到了！返回原文格式的短语
+                    original = ' '.join(words[start:start + n])
+                    return original, words[start:start + n]
+    return highlighted_word, [highlighted_word]
+
+
+# ══════════════════════════════════════════════════
+#  原生 PDF 提取
+# ══════════════════════════════════════════════════
+
+def extract_native(pdf_bytes):
+    """提取原生 PDF 中的黄标单词，返回每页的 (text, bbox, page_text)"""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    results = {}
+
+    for pn, page in enumerate(doc):
+        yellow_rects = _get_yellow_rects(page)
+        if not yellow_rects:
+            continue
+
+        full_text = _extract_page_text(page)
+        page_words = []
+
+        blocks = page.get_text("dict")["blocks"]
+        for block in blocks:
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    bbox = fitz.Rect(span["bbox"])
+                    text = span["text"].strip()
+                    if not text:
+                        continue
+                    for yr in yellow_rects:
+                        overlap = bbox.intersect(yr)
+                        if overlap and overlap.get_area() > 0:
+                            page_words.append({
+                                "text": text,
+                                "bbox": bbox,
+                            })
+                            break
+
+        results[pn] = {
+            "words": page_words,
+            "full_text": full_text,
+        }
+
+    doc.close()
+    return results
+
+
+# ══════════════════════════════════════════════════
+#  扫描件 PDF 提取（OCR）
+# ══════════════════════════════════════════════════
+
+def extract_scanned(pdf_bytes):
+    """从扫描件 PDF 提取黄标区域→OCR"""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    results = {}
+
+    for pn, page in enumerate(doc):
+        yellow_rects = _get_yellow_rects(page)
+        if not yellow_rects:
+            continue
+
+        # 取底图
+        images = page.get_images(full=True)
+        if not images:
+            continue
+
+        best = max(images, key=lambda x: (x[2], x[3]))
+        pix = fitz.Pixmap(doc, best[0])
+        if pix.n > 4:
+            pix = fitz.Pixmap(fitz.csRGB, pix)
+
+        pil_img = Image.open(io.BytesIO(pix.tobytes("png")))
+        img_w, img_h = pil_img.size
+
+        # 图片在页面的放置位置
+        img_info = page.get_image_info()
+        img_bbox = fitz.Rect(img_info[0]["bbox"]) if img_info else page.rect
+        pdf_img_w, pdf_img_h = img_bbox.width, img_bbox.height
+
+        page_words = []
+        for yr in yellow_rects:
+            if yr.intersect(img_bbox).get_area() <= 0:
+                continue
+
+            sx, sy = img_w / pdf_img_w, img_h / pdf_img_h
+            x0 = int((yr.x0 - img_bbox.x0) * sx)
+            y0 = int((yr.y0 - img_bbox.y0) * sy)
+            x1 = int((yr.x1 - img_bbox.x0) * sx)
+            y1 = int((yr.y1 - img_bbox.y0) * sy)
+            x0, y0 = max(0, x0), max(0, y0)
+            x1, y1 = min(img_w, x1), min(img_h, y1)
+            if x1 <= x0 or y1 <= y0:
+                continue
+
+            pad = 5
+            crop = pil_img.crop((
+                max(0, x0 - pad), max(0, y0 - pad),
+                min(img_w, x1 + pad), min(img_h, y1 + pad),
+            ))
+            crop = crop.resize((crop.width * 3, crop.height * 3), Image.LANCZOS)
+
+            try:
+                text = pytesseract.image_to_string(crop, lang="eng",
+                                                   config="--psm 7 --oem 3")
+                text = text.strip()
+                if text:
+                    page_words.append({"text": text, "bbox": yr})
+            except Exception:
+                continue
+
+        results[pn] = {
+            "words": page_words,
+            "full_text": "\n".join(w["text"] for w in page_words),
+        }
+
+    doc.close()
+    return results
+
+
+# ══════════════════════════════════════════════════
+#  文本类型判断
+# ══════════════════════════════════════════════════
+
+def is_scanned_pdf(pdf_bytes, sample_pages=2):
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    text_len = sum(len(doc[i].get_text().strip()) for i in range(min(len(doc), sample_pages)))
+    doc.close()
+    return text_len < 50
+
+
+# ══════════════════════════════════════════════════
+#  有道词典查询
+# ══════════════════════════════════════════════════
 
 def query_youdao(word, retries=3):
-    """查询 Youdao 词典，返回 (中文释义, 词性)"""
-    url = f"https://dict.youdao.com/w/eng/{word}"
+    """查询有道词典，返回中文释义（含词性）"""
+    url = f"https://dict.youdao.com/w/eng/{requests.utils.quote(word)}"
     headers = {
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
                        "Chrome/120.0.0.0 Safari/537.36"),
-        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
     }
 
     for attempt in range(retries):
@@ -427,75 +323,75 @@ def query_youdao(word, retries=3):
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code != 200:
                 continue
-
             html = resp.text
 
-            # 优先查词性+释义
-            pos_meaning = []
-            # 模式1: <span class="pos">n.</span><span class="trans">释义</span>
-            pos_pattern = re.findall(
-                r'<span\s+class="pos"[^>]*>(.*?)</span>\s*'
-                r'<span\s+class="trans"[^>]*>(.*?)</span>',
-                html, re.DOTALL
-            )
-            for pos, trans in pos_pattern:
-                pos = pos.strip()
-                trans = trans.strip().replace("\n", "")
-                trans = re.sub(r'<[^>]+>', '', trans)
-                pos_meaning.append(f"{pos} {trans}")
+            meanings = []
 
-            # 模式2: <li><span class="word">def</span></li>
-            li_pattern = re.findall(
-                r'<li[^>]*>\s*<span[^>]*class="[^"]*trans[^"]*"[^>]*>'
-                r'(.*?)</span>',
-                html, re.DOTALL
-            )
-            for m in li_pattern:
-                m = re.sub(r'<[^>]+>', '', m).strip()
-                if m and '[' not in m and len(m) > 1:
-                    if m not in pos_meaning:
-                        pos_meaning.append(m)
+            # 方法A: 找 .trans-container > ul > li
+            # 这是有道最常规的释义容器
+            for item in re.findall(
+                    r'<div[^>]*class="[^"]*trans-container[^"]*"[^>]*>'
+                    r'.*?<ul>(.*?)</ul>', html, re.DOTALL):
+                for li in re.findall(r'<li>(.*?)</li>', item, re.DOTALL):
+                    # 提取 span 或直接文本
+                    text = re.sub(r'<[^>]+>', '', li).strip()
+                    if text and re.search(r'[一-鿿]', text):
+                        # 提取词性（如果有）
+                        clean = re.sub(r'\s+', ' ', text).strip()
+                        if clean not in meanings:
+                            meanings.append(clean)
 
-            # 模式3: <div class="def">释义</div>
-            if not pos_meaning:
-                def_pattern = re.findall(
-                    r'<div\s+class="def"[^>]*>(.*?)</div>',
-                    html, re.DOTALL
-                )
-                for d in def_pattern:
-                    d = re.sub(r'<[^>]+>', '', d).strip()
-                    if d and len(d) > 1:
-                        if d not in pos_meaning:
-                            pos_meaning.append(d)
+            # 方法B: 词性 + 释义模式（<span class="pos">v.</span>  <span class="trans">转移</span>）
+            if not meanings:
+                for pos, trans in re.findall(
+                        r'<span[^>]*class="[^"]*pos[^"]*"[^>]*>(.*?)</span>\s*'
+                        r'<span[^>]*class="[^"]*trans[^"]*"[^>]*>(.*?)</span>',
+                        html, re.DOTALL):
+                    p = pos.strip()
+                    t = re.sub(r'<[^>]+>', '', trans.strip())
+                    if re.search(r'[一-鿿]', t):
+                        meanings.append(f"{p}{t}")
 
-            # 模式4: 短语翻译
-            if not pos_meaning:
-                ph_pattern = re.findall(
-                    r'<div\s+class="[^"]*wordGroup[^"]*"[^>]*>'
-                    r'.*?<span[^>]*>(.*?)</span>',
-                    html, re.DOTALL
-                )
-                for p in ph_pattern:
-                    p = re.sub(r'<[^>]+>', '', p).strip()
-                    if p and len(p) > 1:
-                        if p not in pos_meaning:
-                            pos_meaning.append(p)
+            # 方法C: <div class="word-define">...<li>释义</li>...
+            if not meanings:
+                for li in re.findall(
+                        r'<div[^>]*class="[^"]*word-define[^"]*"[^>]*>'
+                        r'.*?<li[^>]*>(.*?)</li>', html, re.DOTALL):
+                    t = re.sub(r'<[^>]+>', '', li).strip()
+                    if t and re.search(r'[一-鿿]', t) and t not in meanings:
+                        meanings.append(t)
 
-            if pos_meaning:
-                return "; ".join(pos_meaning[:3])
+            # 方法D: 短语释义（.<div class="wordGroup">）
+            if not meanings:
+                for span in re.findall(
+                        r'<div[^>]*class="[^"]*wordGroup[^"]*"[^>]*>'
+                        r'.*?<span[^>]*>(.*?)</span>', html, re.DOTALL):
+                    t = re.sub(r'<[^>]+>', '', span).strip()
+                    if t and re.search(r'[一-鿿]', t) and t not in meanings:
+                        meanings.append(t)
 
-            # fallback: 百度/必应风格结果
-            fallback = re.findall(r'<div[^>]*class="[^"]*basic[^"]*"[^>]*>'
-                                  r'.*?<li[^>]*>(.*?)</li>',
-                                  html, re.DOTALL)
-            if fallback:
-                texts = []
-                for f in fallback[:3]:
-                    t = re.sub(r'<[^>]+>', '', f).strip()
-                    if t:
-                        texts.append(t)
-                if texts:
-                    return "; ".join(texts)
+            if meanings:
+                return "；".join(meanings[:3])
+
+            # 方法E: 尝试 JSON API 作为后备
+            try:
+                api_url = f"https://dict.youdao.com/jsonapi?q={requests.utils.quote(word)}"
+                api_resp = requests.get(api_url, headers=headers, timeout=5)
+                if api_resp.status_code == 200:
+                    data = api_resp.json()
+                    # 查 ec 字段（英中词典）
+                    for section in (data.get("ec", {}).get("exam", []) +
+                                    data.get("ec", {}).get("source", [])):
+                        for tr in section.get("trs", []):
+                            for tran in tr.get("tr", []):
+                                t = tran.get("l", {}).get("i", "")
+                                if re.search(r'[一-鿿]', t):
+                                    pos = tr.get("pos", "")
+                                    meanings.append(f"{pos} {t}".strip())
+                    if meanings:
+                        return "；".join(meanings[:3])
+            except Exception:
+                pass
 
             return "未找到释义"
 
@@ -504,28 +400,18 @@ def query_youdao(word, retries=3):
                 time.sleep(1)
                 continue
             return "查询失败"
+
     return "查询失败"
 
 
-# ── 文本类型判断 ─────────────────────────────────
-
-def is_scanned_pdf(pdf_bytes, sample_pages=2):
-    """判断 PDF 是否为扫描件（无原生文本则视为扫描件）"""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    total = min(len(doc), sample_pages)
-    text_len = 0
-    for i in range(total):
-        text_len += len(doc[i].get_text().strip())
-    doc.close()
-    return text_len < 50  # 几乎无原生文本即扫描件
-
-
-# ── 主处理流程 ────────────────────────────────────
+# ══════════════════════════════════════════════════
+#  主处理流程
+# ══════════════════════════════════════════════════
 
 def process_pdf(pdf_bytes, filename="", on_status=None):
     """
-    处理单个 PDF，返回单词数据列表：
-    [{"word": str, "chinese": str, "sentence": str, "count": int}, ...]
+    提取单个 PDF 中的黄标单词。
+    返回 [(word, chinese, sentence, source_word, is_phrase), ...]
     """
     if on_status:
         on_status(f"分析 {filename}...")
@@ -534,146 +420,177 @@ def process_pdf(pdf_bytes, filename="", on_status=None):
     if on_status:
         on_status(f"{'扫描件' if scanned else '文本'} PDF: {filename}")
 
-    if scanned:
-        raw = extract_scanned(pdf_bytes, filename)
-    else:
-        raw = extract_native(pdf_bytes, filename)
+    raw = extract_scanned(pdf_bytes) if scanned else extract_native(pdf_bytes)
 
-    # 收集所有黄色区域提取的文本
-    word_context = {}  # lower(word) -> {"forms": {capitalized_form: count}, "sentences": []}
+    rows = []  # [(source_word, sentence_fragment, full_text)]
 
-    for page_num in sorted(raw.keys()):
-        page_data = raw[page_num]
-        for item in page_data:
+    for pn in sorted(raw.keys()):
+        data = raw[pn]
+        page_text = data.get("full_text", "")
+        sents = _split_sentences(page_text) if page_text else []
+
+        for item in data["words"]:
             text = item["text"]
-            words = clean_text(text)
-            words = [w for w in words if is_valid_word(w)]
+            bbox = item["bbox"]
 
-            # 检测短语
-            phrases = find_phrases(words)
+            # 提取单词
+            words, _ = _clean_words(text)
 
-            # 记录上下文（原文），按小写归一化
             for w in words:
-                key = w.lower()
-                if key not in word_context:
-                    word_context[key] = {"forms": {}, "sentences": []}
-                word_context[key]["forms"][w] = word_context[key]["forms"].get(w, 0) + 1
-                context_snippet = text.strip()[:100]
-                if context_snippet not in word_context[key]["sentences"]:
-                    word_context[key]["sentences"].append(context_snippet)
+                w_lower = w.lower()
+                if w_lower in MINIMAL_STOP:
+                    continue
 
-            # 短语作为整体记录
-            for phrase in phrases:
-                if phrase not in word_context:
-                    word_context[phrase] = {"forms": {phrase: 1}, "sentences": []}
-                if text.strip()[:100] not in word_context[phrase]["sentences"]:
-                    word_context[phrase]["sentences"].append(text.strip()[:100])
+                # 找完整句子
+                sentence = ""
+                if sents:
+                    sentence = find_sentence_for_word(w, page_text,
+                                                      bbox.y0, pn)
+                if not sentence:
+                    sentence = text  # fallback
+
+                # 检测短语
+                phrase, phrase_words = detect_phrase_in_sentence(w, sentence)
+                is_phrase = phrase.lower() != w.lower()
+
+                if is_phrase:
+                    rows.append({
+                        "word": phrase,
+                        "source_word": w,
+                        "sentence": sentence,
+                        "is_phrase": True,
+                    })
+                else:
+                    rows.append({
+                        "word": w,
+                        "source_word": w,
+                        "sentence": sentence,
+                        "is_phrase": False,
+                    })
 
     if on_status:
-        on_status(f"  共提取 {len(word_context)} 个单词/短语")
+        on_status(f"  共提取 {len(rows)} 条")
 
-    # 查词典
-    result = []
-    total = len(word_context)
-    for i, (key, data) in enumerate(sorted(word_context.items(),
-                                            key=lambda x: -len(x[1]["sentences"]))):
-        # 使用出现最多的形式作为显示单词
-        best_form = max(data["forms"], key=data["forms"].get) if data["forms"] else key
+    # 查词典（去重）
+    unique_words = set()
+    for r in rows:
+        unique_words.add(r["word"].lower())
+
+    cache = {}
+    total = len(unique_words)
+    for i, key in enumerate(sorted(unique_words)):
         if on_status:
-            on_status(f"  查词典 ({i+1}/{total}): {best_form}")
-        chinese = query_youdao(key)
-        sentence = data["sentences"][0] if data["sentences"] else ""
-        result.append({
-            "word": best_form,
-            "chinese": chinese,
-            "sentence": sentence,
-            "count": len(data["sentences"]),
-            "_key": key,  # 小写用于后续合并
-        })
-        time.sleep(0.3)  # 防止请求过快
+            on_status(f"  查词典 ({i + 1}/{total}): {key}")
+        cache[key] = query_youdao(key)
+        time.sleep(0.3)
 
-    return result
+    # 填充结果
+    for r in rows:
+        r["chinese"] = cache.get(r["word"].lower(), "未找到释义")
+
+    return rows
 
 
 def process_multiple_pdfs(file_dict, on_status=None):
-    """
-    处理多个 PDF。
-    file_dict: {filename: bytes, ...}
-    返回合并后的单词列表（按总出现次数降序）
-    """
-    # 收集所有结果
-    all_results = {}  # word -> {chinese, sentences:[], total_count, sources:[]}
+    """处理多个 PDF，返回所有行的扁平列表"""
+    all_rows = []
+    total = len(file_dict)
 
-    total_files = len(file_dict)
     for idx, (fname, data) in enumerate(file_dict.items()):
         if on_status:
-            on_status(f"[{idx+1}/{total_files}] {fname}")
+            on_status(f"[{idx + 1}/{total}] {fname}")
+        rows = process_pdf(data, fname, on_status=on_status)
+        for r in rows:
+            r["source"] = fname
+        all_rows.extend(rows)
 
-        results = process_pdf(data, fname, on_status=on_status)
-
-        for r in results:
-            w = r["word"].lower()
-            if w not in all_results:
-                all_results[w] = {
-                    "word": r["word"],
-                    "chinese": r["chinese"],
-                    "sentences": [],
-                    "total_count": 0,
-                    "sources": [],
-                }
-            if r["sentence"] and r["sentence"] not in all_results[w]["sentences"]:
-                all_results[w]["sentences"].append(r["sentence"])
-            all_results[w]["total_count"] += r["count"]
-            if fname not in all_results[w]["sources"]:
-                all_results[w]["sources"].append(fname)
-
-    # 排序：总次数降序，同次数字母升序
-    sorted_words = sorted(all_results.values(),
-                          key=lambda x: (-x["total_count"], x["word"].lower()))
-
-    return sorted_words
+    return all_rows
 
 
-# ── Excel 生成 ────────────────────────────────────
+# ══════════════════════════════════════════════════
+#  Excel 生成（带 SUMIF 公式）
+# ══════════════════════════════════════════════════
 
-def to_excel(words_data):
-    """将单词数据导出为 Excel，返回 bytes"""
+def to_excel(rows):
+    """生成 Excel，每行为 (word/phrase, 释义, 原句, SUMIF公式, 辅助列E)"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "单词本"
 
-    # 表头
-    headers = ["单词/短语", "中文意思", "原文原句", "出现次数"]
-    header_font = Font(bold=True, size=11, name="Arial")
-    header_fill = PatternFill("solid", fgColor="4472C4")
-    header_font_white = Font(bold=True, size=11, name="Arial", color="FFFFFF")
+    # ── 样式 ──
+    hfont = Font(bold=True, size=11, name="Arial", color="FFFFFF")
+    hfill = PatternFill("solid", fgColor="4472C4")
+    h_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin", color="D0D0D0"),
+        right=Side(style="thin", color="D0D0D0"),
+        top=Side(style="thin", color="D0D0D0"),
+        bottom=Side(style="thin", color="D0D0D0"),
+    )
 
+    # 表头
+    headers = ["单词/短语", "中文意思和词性", "原文原句", "累计出现次数"]
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=h)
-        cell.font = header_font_white
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal="center")
+        cell.font = hfont
+        cell.fill = hfill
+        cell.alignment = h_align
+        cell.border = thin_border
 
-    # 数据
-    for i, item in enumerate(words_data, 2):
-        ws.cell(row=i, column=1, value=item["word"])
-        ws.cell(row=i, column=2, value=item["chinese"])
-        # 兼容两种返回格式
-        if "sentences" in item:
-            sentences = "\n".join(item["sentences"][:3])
+    # E列隐藏（辅助列）
+    col_e = ws.column_dimensions['E']
+    col_e.hidden = True
+
+    # ── 数据 ──
+    data_font = Font(size=10, name="Arial")
+    bold_font = Font(size=10, name="Arial", bold=True)
+    highlight_fill = PatternFill("solid", fgColor="FFF2CC")  # 浅黄底色表示来源词
+
+    for i, r in enumerate(rows, 2):
+        # A列：单词/短语
+        if r["is_phrase"]:
+            # 短语：用浅黄底色标出原始高亮词
+            cell_a = ws.cell(row=i, column=1,
+                             value=r["word"])
+            cell_a.font = data_font
+            cell_a.fill = highlight_fill
         else:
-            sentences = item.get("sentence", "")
-        ws.cell(row=i, column=3, value=sentences)
-        ws.cell(row=i, column=4, value=item.get("total_count", item.get("count", 0)))
+            # 单个词：加粗表示这就是来源词
+            cell_a = ws.cell(row=i, column=1,
+                             value=r["word"])
+            cell_a.font = bold_font
 
-    # 列宽
-    ws.column_dimensions['A'].width = 25
-    ws.column_dimensions['B'].width = 40
-    ws.column_dimensions['C'].width = 60
-    ws.column_dimensions['D'].width = 12
+        # B列：中文释义
+        cell_b = ws.cell(row=i, column=2, value=r["chinese"])
+        cell_b.font = data_font
 
-    # 冻结首行
+        # C列：原文原句
+        cell_c = ws.cell(row=i, column=3, value=r["sentence"])
+        cell_c.font = data_font
+        cell_c.alignment = Alignment(wrap_text=True)
+
+        # D列：SUMIF公式 =SUMIF(A:A, A{i}, E:E)
+        ws.cell(row=i, column=4).value = f'=SUMIF(A:A,A{i},E:E)'
+        ws.cell(row=i, column=4).font = data_font
+        ws.cell(row=i, column=4).alignment = Alignment(horizontal="center")
+
+        # E列（隐藏）：辅助计数
+        ws.cell(row=i, column=5, value=1)
+
+        # 边框
+        for col in range(1, 6):
+            ws.cell(row=i, column=col).border = thin_border
+
+    # ── 列宽 ──
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['B'].width = 45
+    ws.column_dimensions['C'].width = 65
+    ws.column_dimensions['D'].width = 14
+    ws.column_dimensions['E'].width = 3
+
+    # ── 冻结首行 + 自动筛选 ──
     ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:D{len(rows) + 1}"
 
     buf = io.BytesIO()
     wb.save(buf)
